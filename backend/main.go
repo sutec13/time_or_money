@@ -330,7 +330,7 @@ func readDeleteConfirmation(r *http.Request) bool {
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		return false
 	}
-	return input.Confirmation == "削除する"
+	return input.Confirmation == "delete"
 }
 
 func (a *app) handleLocks(w http.ResponseWriter, r *http.Request) {
@@ -802,7 +802,7 @@ func (a *app) retrieveStripeSession(sessionID string) (stripeCheckoutSession, er
 
 func (a *app) deleteLock(w http.ResponseWriter, r *http.Request, id int64) {
 	if !readDeleteConfirmation(r) {
-		writeError(w, http.StatusBadRequest, "confirmation must be 削除する")
+		writeError(w, http.StatusBadRequest, "confirmation must be delete")
 		return
 	}
 
@@ -867,7 +867,7 @@ func (a *app) handlePurchaseByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !readDeleteConfirmation(r) {
-		writeError(w, http.StatusBadRequest, "confirmation must be 削除する")
+		writeError(w, http.StatusBadRequest, "confirmation must be delete")
 		return
 	}
 

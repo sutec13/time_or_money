@@ -34,7 +34,7 @@ const api = {
         "Content-Type": "application/json",
         "X-Delete-Confirmation": "delete"
       },
-      body: JSON.stringify({ confirmation: "削除する" })
+      body: JSON.stringify({ confirmation: "delete" })
     });
     return parseResponse(response);
   }
@@ -247,7 +247,7 @@ function App() {
   }
 
   async function confirmDelete() {
-    if (deleteText !== "削除する" || !deleteDialog) return;
+    if (deleteText !== "delete" || !deleteDialog) return;
     setMessage("");
     try {
       if (deleteDialog.kind === "lock") {
@@ -390,11 +390,11 @@ function App() {
             <h2 id="delete-title">本当に削除しますか</h2>
             <p className="locked-copy">
               Lock #{deleteDialog.item.id} をDBから削除します。
-              続けるには「削除する」と入力してください。
+              続けるには「delete」と入力してください。
             </p>
-            <input value={deleteText} onChange={(event) => setDeleteText(event.target.value)} placeholder="削除する" autoFocus />
+            <input value={deleteText} onChange={(event) => setDeleteText(event.target.value)} placeholder="delete" autoFocus />
             <div className="card-actions">
-              <button className="danger-button" type="button" disabled={deleteText !== "削除する"} onClick={confirmDelete}>削除を確定</button>
+              <button className="danger-button" type="button" disabled={deleteText !== "delete"} onClick={confirmDelete}>削除を確定</button>
               <button className="ghost-button" type="button" onClick={() => setDeleteDialog(null)}>キャンセル</button>
             </div>
           </div>
