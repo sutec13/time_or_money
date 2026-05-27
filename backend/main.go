@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,11 +28,13 @@ const (
 )
 
 type app struct {
-	db        *sql.DB
-	dialect   string
-	static    http.Handler
-	stripeKey string
-	baseURL   string
+	db                  *sql.DB
+	dialect             string
+	static              http.Handler
+	stripeKey           string
+	stripeWebhookSecret string
+	baseURL             string
+	devMode             bool
 }
 
 type lockItem struct {
@@ -47,18 +52,6 @@ type lockItem struct {
 	IsOpen                bool    `json:"isOpen"`
 	CreatedAt             string  `json:"createdAt"`
 	UpdatedAt             string  `json:"updatedAt"`
-}
-
-type purchaseEvent struct {
-	ID                int64   `json:"id"`
-	LockID            int64   `json:"lockId"`
-	LockPreview       string  `json:"lockPreview"`
-	Amount            int     `json:"amount"`
-	Currency          string  `json:"currency"`
-	Provider          string  `json:"provider"`
-	ProviderPaymentID *string `json:"providerPaymentId"`
-	Status            string  `json:"status"`
-	CreatedAt         string  `json:"createdAt"`
 }
 
 type createLockRequest struct {
@@ -79,24 +72,32 @@ type errorResponse struct {
 }
 
 type configResponse struct {
-	StripeEnabled bool `json:"stripeEnabled"`
+	StripeEnabled bool   `json:"stripeEnabled"`
 	DBProvider    string `json:"dbProvider"`
 }
 
 type checkoutResponse struct {
-	CheckoutURL string `json:"checkoutUrl,omitempty"`
-	Mode        string `json:"mode"`
+	CheckoutURL string    `json:"checkoutUrl,omitempty"`
+	Mode        string    `json:"mode"`
 	Lock        *lockItem `json:"lock,omitempty"`
 }
 
 type stripeCheckoutSession struct {
-	ID             string `json:"id"`
+	ID            string `json:"id"`
 	URL           string `json:"url"`
 	PaymentStatus string `json:"payment_status"`
-	Status         string `json:"status"`
+	Status        string `json:"status"`
 	Metadata      struct {
 		LockID string `json:"lock_id"`
 	} `json:"metadata"`
+}
+
+type stripeWebhookEvent struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	Data struct {
+		Object json.RawMessage `json:"object"`
+	} `json:"data"`
 }
 
 func main() {
@@ -120,25 +121,31 @@ func main() {
 	}
 
 	application := &app{
-		db:        db,
-		dialect:   dialect,
-		static:    http.FileServer(http.Dir("../frontend")),
-		stripeKey: os.Getenv("STRIPE_SECRET_KEY"),
-		baseURL:   configuredBaseURL(port),
+		db:                  db,
+		dialect:             dialect,
+		static:              http.FileServer(http.Dir("../frontend")),
+		stripeKey:           os.Getenv("STRIPE_SECRET_KEY"),
+		stripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
+		baseURL:             configuredBaseURL(port),
+		devMode:             isDevMode(),
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/config", application.handleConfig)
-	mux.HandleFunc("/api/locks", application.handleLocks)
-	mux.HandleFunc("/api/locks/", application.handleLockByID)
-	mux.HandleFunc("/api/purchases", application.handlePurchases)
-	mux.HandleFunc("/api/purchases/", application.handlePurchaseByID)
-	mux.HandleFunc("/api/stripe/checkout/complete", application.handleStripeCheckoutComplete)
-	mux.HandleFunc("/dev/reload", application.handleReload)
-	mux.Handle("/", application.spaHandler())
-
 	log.Printf("Time or Money running at http://localhost:%s using %s", port, dialect)
-	log.Fatal(http.ListenAndServe(":"+port, withLogging(mux)))
+	log.Fatal(http.ListenAndServe(":"+port, withLogging(application.routes())))
+}
+
+func (a *app) routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/config", a.handleConfig)
+	mux.HandleFunc("/api/locks", a.handleLocks)
+	mux.HandleFunc("/api/locks/", a.handleLockByID)
+	mux.HandleFunc("/api/stripe/checkout/complete", a.handleStripeCheckoutComplete)
+	mux.HandleFunc("/api/stripe/webhook", a.handleStripeWebhook)
+	if a.devMode {
+		mux.HandleFunc("/dev/reload", a.handleReload)
+	}
+	mux.Handle("/", a.spaHandler())
+	return mux
 }
 
 func loadEnvFile(path string) error {
@@ -179,14 +186,14 @@ func openDB() (*sql.DB, string, error) {
 		if !strings.HasPrefix(databaseURL, "postgres://") && !strings.HasPrefix(databaseURL, "postgresql://") {
 			log.Printf("DATABASE_URL is not a Postgres connection string; falling back to SQLite")
 		} else {
-		db, err := sql.Open("pgx", postgresURL(databaseURL))
-		if err != nil {
-			return nil, "", err
-		}
-		db.SetMaxOpenConns(5)
-		db.SetMaxIdleConns(2)
-		db.SetConnMaxLifetime(30 * time.Minute)
-		return db, "postgres", db.Ping()
+			db, err := sql.Open("pgx", postgresURL(databaseURL))
+			if err != nil {
+				return nil, "", err
+			}
+			db.SetMaxOpenConns(5)
+			db.SetMaxIdleConns(2)
+			db.SetConnMaxLifetime(30 * time.Minute)
+			return db, "postgres", db.Ping()
 		}
 	}
 
@@ -314,6 +321,17 @@ func configuredBaseURL(port string) string {
 	return "http://localhost:" + port
 }
 
+func isDevMode() bool {
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	if env == "development" || env == "dev" || env == "local" {
+		return true
+	}
+	if env == "production" || env == "prod" || os.Getenv("RENDER") != "" {
+		return false
+	}
+	return true
+}
+
 func (a *app) handleConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -385,15 +403,6 @@ func (a *app) handleLockByID(w http.ResponseWriter, r *http.Request) {
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
-		return
-	}
-
-	if len(parts) == 2 && parts[1] == "unlock" {
-		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
-		}
-		a.unlockLock(w, id)
 		return
 	}
 
@@ -540,32 +549,9 @@ func (a *app) getLock(w http.ResponseWriter, id int64) {
 	writeJSON(w, http.StatusOK, item)
 }
 
-func (a *app) unlockLock(w http.ResponseWriter, id int64) {
-	item, err := a.recordUnlock(id, "demo", "", "paid_demo")
-	if errors.Is(err, sql.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "lock not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to unlock")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, item)
-}
-
 func (a *app) createStripeCheckout(w http.ResponseWriter, id int64) {
 	if a.stripeKey == "" {
-		item, err := a.recordUnlock(id, "demo", "", "paid_demo")
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "lock not found")
-			return
-		}
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to unlock")
-			return
-		}
-		writeJSON(w, http.StatusOK, checkoutResponse{Mode: "demo", Lock: &item})
+		writeError(w, http.StatusServiceUnavailable, "stripe is not configured")
 		return
 	}
 
@@ -642,6 +628,100 @@ func (a *app) handleStripeCheckoutComplete(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (a *app) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if a.stripeWebhookSecret == "" {
+		writeError(w, http.StatusServiceUnavailable, "stripe webhook is not configured")
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read webhook")
+		return
+	}
+	if err := verifyStripeSignature(body, r.Header.Get("Stripe-Signature"), a.stripeWebhookSecret); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid stripe signature")
+		return
+	}
+
+	var event stripeWebhookEvent
+	if err := json.Unmarshal(body, &event); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid stripe webhook json")
+		return
+	}
+
+	if event.Type == "checkout.session.completed" {
+		var session stripeCheckoutSession
+		if err := json.Unmarshal(event.Data.Object, &session); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid stripe checkout session")
+			return
+		}
+		if session.PaymentStatus == "paid" {
+			lockID, err := strconv.ParseInt(session.Metadata.LockID, 10, 64)
+			if err != nil || lockID <= 0 {
+				writeError(w, http.StatusBadRequest, "stripe session lock metadata is invalid")
+				return
+			}
+			if _, err := a.recordUnlock(lockID, "stripe", session.ID, "paid_stripe"); err != nil {
+				log.Printf("stripe webhook record unlock: %v", err)
+				writeError(w, http.StatusInternalServerError, "failed to record stripe payment")
+				return
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"received": true})
+}
+
+func verifyStripeSignature(payload []byte, header string, secret string) error {
+	timestamp, signatures := stripeSignatureValues(header)
+	if timestamp == "" || len(signatures) == 0 {
+		return errors.New("missing stripe signature")
+	}
+
+	createdAt, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return err
+	}
+	if time.Since(time.Unix(createdAt, 0)) > 5*time.Minute || time.Until(time.Unix(createdAt, 0)) > 5*time.Minute {
+		return errors.New("stripe signature timestamp outside tolerance")
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(timestamp))
+	mac.Write([]byte("."))
+	mac.Write(payload)
+	expected := []byte(hex.EncodeToString(mac.Sum(nil)))
+	for _, signature := range signatures {
+		if hmac.Equal(expected, []byte(signature)) {
+			return nil
+		}
+	}
+	return errors.New("stripe signature mismatch")
+}
+
+func stripeSignatureValues(header string) (string, []string) {
+	var timestamp string
+	var signatures []string
+	for _, part := range strings.Split(header, ",") {
+		key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "t":
+			timestamp = value
+		case "v1":
+			signatures = append(signatures, value)
+		}
+	}
+	return timestamp, signatures
 }
 
 type rawLock struct {
@@ -821,69 +901,6 @@ func (a *app) deleteLock(w http.ResponseWriter, r *http.Request, id int64) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *app) handlePurchases(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	rows, err := a.db.Query(`
-		SELECT p.id, p.lock_id, p.lock_preview, p.amount, p.currency, p.provider, p.provider_payment_id, p.status, p.created_at
-		FROM purchase_events p
-		ORDER BY p.created_at DESC
-	`)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list purchases")
-		return
-	}
-	defer rows.Close()
-
-	events := []purchaseEvent{}
-	for rows.Next() {
-		var event purchaseEvent
-		var providerPaymentID sql.NullString
-		if err := rows.Scan(&event.ID, &event.LockID, &event.LockPreview, &event.Amount, &event.Currency, &event.Provider, &providerPaymentID, &event.Status, &event.CreatedAt); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to read purchase")
-			return
-		}
-		if providerPaymentID.Valid {
-			event.ProviderPaymentID = &providerPaymentID.String
-		}
-		events = append(events, event)
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"purchases": events})
-}
-
-func (a *app) handlePurchaseByID(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	idText := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/purchases/"), "/")
-	id, err := strconv.ParseInt(idText, 10, 64)
-	if err != nil || id <= 0 {
-		writeError(w, http.StatusBadRequest, "invalid purchase id")
-		return
-	}
-	if !readDeleteConfirmation(r) {
-		writeError(w, http.StatusBadRequest, "confirmation must be delete")
-		return
-	}
-
-	result, err := a.db.Exec(a.query(`DELETE FROM purchase_events WHERE id = ?`), id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete purchase")
-		return
-	}
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		writeError(w, http.StatusNotFound, "purchase not found")
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (a *app) findLock(id int64) (lockItem, error) {
 	row := a.db.QueryRow(a.query(`SELECT id, secret_text, unlock_at, unlock_local, timezone_name, timezone_offset_minutes, price_amount, currency, unlocked, unlock_reason, created_at, updated_at FROM locks WHERE id = ?`), id)
 	return scanLock(row)
@@ -953,6 +970,10 @@ func (a *app) spaHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			writeError(w, http.StatusNotFound, "api route not found")
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/dev/") {
+			writeError(w, http.StatusNotFound, "dev route not found")
 			return
 		}
 

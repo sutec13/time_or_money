@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -67,10 +71,8 @@ func TestUnlockCreatesPurchaseEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	unlockRecorder := httptest.NewRecorder()
-	application.unlockLock(unlockRecorder, created.ID)
-	if unlockRecorder.Code != http.StatusOK {
-		t.Fatalf("expected unlock status 200, got %d: %s", unlockRecorder.Code, unlockRecorder.Body.String())
+	if _, err := application.recordUnlock(created.ID, "stripe", "cs_test_record", "paid_stripe"); err != nil {
+		t.Fatalf("record unlock: %v", err)
 	}
 
 	var eventCount int
@@ -83,5 +85,60 @@ func TestUnlockCreatesPurchaseEvent(t *testing.T) {
 	}
 	if amount != price {
 		t.Fatalf("expected purchase amount %d, got %d", price, amount)
+	}
+}
+
+func TestPublicUnlockRouteIsNotAvailable(t *testing.T) {
+	application := newTestApp(t)
+	request := httptest.NewRequest(http.MethodPost, "/api/locks/1/unlock", nil)
+	recorder := httptest.NewRecorder()
+
+	application.handleLockByID(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected unlock route status 404, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPurchaseHistoryRouteIsNotAvailable(t *testing.T) {
+	application := newTestApp(t)
+	request := httptest.NewRequest(http.MethodGet, "/api/purchases", nil)
+	recorder := httptest.NewRecorder()
+
+	application.routes().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected purchases route status 404, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestDevReloadRouteIsHiddenInProduction(t *testing.T) {
+	application := newTestApp(t)
+	application.devMode = false
+	request := httptest.NewRequest(http.MethodGet, "/dev/reload", nil)
+	recorder := httptest.NewRecorder()
+
+	application.routes().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected dev reload status 404, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestStripeSignatureVerification(t *testing.T) {
+	payload := []byte(`{"id":"evt_test","type":"checkout.session.completed"}`)
+	secret := "whsec_test"
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(timestamp))
+	mac.Write([]byte("."))
+	mac.Write(payload)
+	header := "t=" + timestamp + ",v1=" + hex.EncodeToString(mac.Sum(nil))
+
+	if err := verifyStripeSignature(payload, header, secret); err != nil {
+		t.Fatalf("expected signature to verify: %v", err)
+	}
+	if err := verifyStripeSignature(payload, header, "wrong_secret"); err == nil {
+		t.Fatal("expected wrong signature secret to fail")
 	}
 }

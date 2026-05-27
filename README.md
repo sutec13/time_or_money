@@ -1,6 +1,6 @@
 # Time or Money
 
-React + Go + SQLite app for creating locked text entries that open after time passes, a demo payment, or Stripe Checkout in test mode.
+React + Go + SQLite/Postgres app for creating locked text entries that open after time passes or after Stripe Checkout in test mode.
 
 ## Requirements
 
@@ -9,7 +9,7 @@ React + Go + SQLite app for creating locked text entries that open after time pa
 
 ## Run
 
-Edit `backend/.env` if you want Supabase or Stripe settings. Empty values keep local SQLite and demo payments.
+Edit `backend/.env` if you want Supabase or Stripe settings. Empty database settings keep local SQLite.
 
 ```powershell
 cd backend
@@ -46,14 +46,25 @@ Set your Stripe test secret key in `backend/.env` before starting the Go server:
 
 ```env
 STRIPE_SECRET_KEY="sk_test_..."
+STRIPE_WEBHOOK_SECRET="whsec_..."
 PUBLIC_BASE_URL="http://localhost:5173"
 ```
 
-When `STRIPE_SECRET_KEY` is set, locked items use Stripe Checkout. After Checkout redirects back with `checkout_session_id`, the server verifies the Checkout Session with Stripe before unlocking and writing `purchase_events`.
+Locked items use Stripe Checkout. After Checkout redirects back with `checkout_session_id`, the server verifies the Checkout Session with Stripe before unlocking and writing `purchase_events`.
+
+For production or Render, also create a Stripe webhook endpoint:
+
+- Endpoint URL: `https://your-render-url/api/stripe/webhook`
+- Event: `checkout.session.completed`
+- Secret: copy the endpoint signing secret into `STRIPE_WEBHOOK_SECRET`
+
+The webhook is the durable payment path. The redirect verification remains as a convenience for updating the browser immediately after payment.
 
 ## Notes
 
-- If `STRIPE_SECRET_KEY` is not set, the app falls back to demo payment unlocks.
+- If `STRIPE_SECRET_KEY` is not set, paid early unlocks are disabled.
 - Purchase history is persisted in `purchase_events` with `provider`, `provider_payment_id`, and `status`.
-- Locks and purchase history require typing `削除する` before deletion.
+- Purchase history is not exposed through a public API.
+- Locks require typing `delete` before deletion.
+- `/dev/reload` is only registered in development mode. Set `APP_ENV=production` on production hosts.
 - Lock creation stores the selected local time, browser timezone name, and timezone offset. Unlock checks use the server-side UTC instant saved at creation time, so changing region or IP later does not make a lock open earlier.

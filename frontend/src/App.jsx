@@ -234,7 +234,7 @@ function App() {
         await refreshAll();
         return;
       }
-      setMessage(`${formatPrice(lock.priceAmount, lock.currency)} のデモ購入で開封しました。`);
+      setMessage("Stripeの決済設定を確認してください。");
       await refreshAll();
     } catch (error) {
       setMessage(error.message);
@@ -272,7 +272,7 @@ function App() {
           <span>{locks.length} 件</span>
           <span>{openCount} 開封可能</span>
           <span>{dbProvider}</span>
-          <span>{stripeEnabled ? "Stripe test ON" : "Demo payment"}</span>
+          <span>{stripeEnabled ? "Stripe test ON" : "Stripe未設定"}</span>
         </div>
       </section>
 
@@ -369,8 +369,8 @@ function App() {
 
                     <div className="card-actions">
                       {!visible && (
-                        <button className="pay-button" type="button" onClick={() => handlePay(lock)}>
-                          {stripeEnabled ? "Stripeテスト決済へ" : `${formatPrice(lock.priceAmount, lock.currency)} でデモ開封`}
+                        <button className="pay-button" type="button" disabled={!stripeEnabled} onClick={() => handlePay(lock)}>
+                          {stripeEnabled ? "Stripeテスト決済へ" : "Stripe未設定"}
                         </button>
                       )}
                       <button className="danger-button" type="button" onClick={() => requestDelete("lock", lock)}>削除</button>
