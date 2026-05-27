@@ -33,7 +33,7 @@ Put this in `backend/.env`:
 DATABASE_URL="postgresql://postgres.[PROJECT_REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres"
 ```
 
-Do not put `sb_secret_...` or `anon` keys in `DATABASE_URL`; those are Supabase API keys, not database connection strings. Keep them in `SUPABASE_SERVICE_ROLE_KEY` later if the app adds Supabase REST/Auth features.
+Do not put `sb_secret_...` or `anon` keys in `DATABASE_URL`; those are Supabase API keys, not database connection strings. This app currently only needs the database connection string.
 
 Useful files:
 
