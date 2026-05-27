@@ -356,11 +356,7 @@ function App() {
                       </div>
                     </dl>
 
-                    {visible ? (
-                      <pre className="secret-text">{lock.secretText}</pre>
-                    ) : (
-                      <p className="locked-copy">中身はまだ隠れています。時間まで待つか、設定金額で開けられます。</p>
-                    )}
+                    {visible && <pre className="secret-text">{lock.secretText}</pre>}
 
                     <div className="card-actions">
                       {!visible && (
