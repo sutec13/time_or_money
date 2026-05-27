@@ -1,0 +1,36 @@
+name: Supabase Keepalive
+
+on:
+  schedule:
+    # 12:07 JST every Sunday. GitHub Actions cron uses UTC.
+    - cron: "7 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    name: Ping production API
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read locks through production app
+        run: |
+          set -euo pipefail
+
+          response="$(curl --fail --silent --show-error \
+            --retry 3 \
+            --retry-delay 10 \
+            --max-time 120 \
+            https://time-or-money.onrender.com/api/locks)"
+
+          python - <<'PY' "$response"
+          import json
+          import sys
+
+          data = json.loads(sys.argv[1])
+          if "locks" not in data or not isinstance(data["locks"], list):
+              raise SystemExit("response does not include a locks array")
+
+          print(f"Keepalive OK: {len(data['locks'])} locks returned")
+          PY
