@@ -32,7 +32,7 @@ const api = {
       method: "DELETE",
       headers: {
         "Content-Type": "application/json",
-        "X-Delete-Confirmation": "削除する"
+        "X-Delete-Confirmation": "delete"
       },
       body: JSON.stringify({ confirmation: "削除する" })
     });

@@ -323,7 +323,7 @@ func (a *app) handleConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func readDeleteConfirmation(r *http.Request) bool {
-	if r.Header.Get("X-Delete-Confirmation") == "削除する" || r.URL.Query().Get("confirmation") == "削除する" {
+	if r.Header.Get("X-Delete-Confirmation") == "delete" || r.URL.Query().Get("confirmation") == "delete" {
 		return true
 	}
 	var input deleteRequest
