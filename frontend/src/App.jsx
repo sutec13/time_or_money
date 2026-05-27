@@ -37,7 +37,6 @@ const api = {
       body: JSON.stringify({ confirmation: "削除する" })
     });
     return parseResponse(response);
-  },
   }
 };
 
