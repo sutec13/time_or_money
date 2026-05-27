@@ -49,8 +49,36 @@ func TestCreateLockDefaultsPrice(t *testing.T) {
 	if item.PriceAmount != defaultPrice {
 		t.Fatalf("expected default price %d, got %d", defaultPrice, item.PriceAmount)
 	}
+	if item.Name != "Lock #"+strconv.FormatInt(item.ID, 10) {
+		t.Fatalf("expected default name Lock #%d, got %q", item.ID, item.Name)
+	}
 	if item.SecretText != "" {
 		t.Fatalf("secret text should be hidden before unlock")
+	}
+}
+
+func TestCreateLockStoresCustomName(t *testing.T) {
+	application := newTestApp(t)
+	body, _ := json.Marshal(createLockRequest{
+		Name:       "Launch note",
+		SecretText: "secret",
+		UnlockAt:   time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/locks", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	application.createLock(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var item lockItem
+	if err := json.Unmarshal(recorder.Body.Bytes(), &item); err != nil {
+		t.Fatal(err)
+	}
+	if item.Name != "Launch note" {
+		t.Fatalf("expected custom name, got %q", item.Name)
 	}
 }
 

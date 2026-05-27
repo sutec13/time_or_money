@@ -39,6 +39,7 @@ type app struct {
 
 type lockItem struct {
 	ID                    int64   `json:"id"`
+	Name                  string  `json:"name"`
 	SecretText            string  `json:"secretText,omitempty"`
 	Preview               string  `json:"preview"`
 	UnlockAt              string  `json:"unlockAt"`
@@ -55,6 +56,7 @@ type lockItem struct {
 }
 
 type createLockRequest struct {
+	Name                  string `json:"name"`
 	SecretText            string `json:"secretText"`
 	UnlockAt              string `json:"unlockAt"`
 	UnlockLocal           string `json:"unlockLocal"`
@@ -247,6 +249,7 @@ func sqliteMigrations() []string {
 	return []string{
 		`CREATE TABLE IF NOT EXISTS locks (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL DEFAULT '',
 			secret_text TEXT NOT NULL,
 			unlock_at TEXT NOT NULL,
 			unlock_local TEXT NOT NULL DEFAULT '',
@@ -270,6 +273,7 @@ func sqliteMigrations() []string {
 			created_at TEXT NOT NULL
 		)`,
 		`ALTER TABLE purchase_events ADD COLUMN lock_preview TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE locks ADD COLUMN name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE locks ADD COLUMN unlock_local TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE locks ADD COLUMN timezone_name TEXT NOT NULL DEFAULT 'UTC'`,
 		`ALTER TABLE locks ADD COLUMN timezone_offset_minutes INTEGER NOT NULL DEFAULT 0`,
@@ -282,6 +286,7 @@ func postgresMigrations() []string {
 	return []string{
 		`CREATE TABLE IF NOT EXISTS locks (
 			id BIGSERIAL PRIMARY KEY,
+			name TEXT NOT NULL DEFAULT '',
 			secret_text TEXT NOT NULL,
 			unlock_at TEXT NOT NULL,
 			unlock_local TEXT NOT NULL DEFAULT '',
@@ -306,6 +311,7 @@ func postgresMigrations() []string {
 			lock_preview TEXT NOT NULL DEFAULT ''
 		)`,
 		`ALTER TABLE purchase_events ADD COLUMN IF NOT EXISTS lock_preview TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE locks ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE locks ADD COLUMN IF NOT EXISTS unlock_local TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE locks ADD COLUMN IF NOT EXISTS timezone_name TEXT NOT NULL DEFAULT 'UTC'`,
 		`ALTER TABLE locks ADD COLUMN IF NOT EXISTS timezone_offset_minutes INTEGER NOT NULL DEFAULT 0`,
@@ -419,7 +425,7 @@ func (a *app) handleLockByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) listLocks(w http.ResponseWriter) {
-	rows, err := a.db.Query(`SELECT id, secret_text, unlock_at, unlock_local, timezone_name, timezone_offset_minutes, price_amount, currency, unlocked, unlock_reason, created_at, updated_at FROM locks ORDER BY created_at DESC`)
+	rows, err := a.db.Query(`SELECT id, name, secret_text, unlock_at, unlock_local, timezone_name, timezone_offset_minutes, price_amount, currency, unlocked, unlock_reason, created_at, updated_at FROM locks ORDER BY created_at DESC`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list locks")
 		return
@@ -451,6 +457,11 @@ func (a *app) createLock(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "secret text is required")
 		return
 	}
+	name := strings.TrimSpace(input.Name)
+	if len([]rune(name)) > 100 {
+		writeError(w, http.StatusBadRequest, "name must be 100 characters or fewer")
+		return
+	}
 
 	unlockAt, unlockLocal, timezoneName, timezoneOffsetMinutes, err := parseRequestedUnlock(input)
 	if err != nil {
@@ -468,7 +479,7 @@ func (a *app) createLock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	id, err := a.insertLock(secretText, unlockAt.UTC().Format(time.RFC3339), unlockLocal, timezoneName, timezoneOffsetMinutes, price, now)
+	id, err := a.insertLock(name, secretText, unlockAt.UTC().Format(time.RFC3339), unlockLocal, timezoneName, timezoneOffsetMinutes, price, now)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create lock")
 		return
@@ -482,10 +493,10 @@ func (a *app) createLock(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, item)
 }
 
-func (a *app) insertLock(secretText string, unlockAt string, unlockLocal string, timezoneName string, timezoneOffsetMinutes int, price int, now string) (int64, error) {
-	query := `INSERT INTO locks (secret_text, unlock_at, unlock_local, timezone_name, timezone_offset_minutes, price_amount, currency, unlocked, unlock_reason, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)`
-	args := []any{secretText, unlockAt, unlockLocal, timezoneName, timezoneOffsetMinutes, price, defaultCurrency, now, now}
+func (a *app) insertLock(name string, secretText string, unlockAt string, unlockLocal string, timezoneName string, timezoneOffsetMinutes int, price int, now string) (int64, error) {
+	query := `INSERT INTO locks (name, secret_text, unlock_at, unlock_local, timezone_name, timezone_offset_minutes, price_amount, currency, unlocked, unlock_reason, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)`
+	args := []any{name, secretText, unlockAt, unlockLocal, timezoneName, timezoneOffsetMinutes, price, defaultCurrency, now, now}
 	if a.dialect == "postgres" {
 		var id int64
 		err := a.db.QueryRow(a.query(query+" RETURNING id"), args...).Scan(&id)
@@ -726,6 +737,7 @@ func stripeSignatureValues(header string) (string, []string) {
 
 type rawLock struct {
 	ID          int64
+	Name        string
 	SecretText  string
 	UnlockAt    string
 	PriceAmount int
@@ -735,8 +747,8 @@ type rawLock struct {
 
 func (a *app) findRawLock(id int64) (rawLock, error) {
 	var item rawLock
-	err := a.db.QueryRow(a.query(`SELECT id, secret_text, unlock_at, price_amount, currency, unlocked FROM locks WHERE id = ?`), id).
-		Scan(&item.ID, &item.SecretText, &item.UnlockAt, &item.PriceAmount, &item.Currency, &item.Unlocked)
+	err := a.db.QueryRow(a.query(`SELECT id, name, secret_text, unlock_at, price_amount, currency, unlocked FROM locks WHERE id = ?`), id).
+		Scan(&item.ID, &item.Name, &item.SecretText, &item.UnlockAt, &item.PriceAmount, &item.Currency, &item.Unlocked)
 	return item, err
 }
 
@@ -817,7 +829,7 @@ func (a *app) createStripeSession(item rawLock) (stripeCheckoutSession, error) {
 	form.Set("line_items[0][quantity]", "1")
 	form.Set("line_items[0][price_data][currency]", strings.ToLower(item.Currency))
 	form.Set("line_items[0][price_data][unit_amount]", strconv.Itoa(item.PriceAmount))
-	form.Set("line_items[0][price_data][product_data][name]", "Time or Money Lock #"+strconv.FormatInt(item.ID, 10))
+	form.Set("line_items[0][price_data][product_data][name]", "Time or Money "+lockDisplayName(item.ID, item.Name))
 	form.Set("metadata[lock_id]", strconv.FormatInt(item.ID, 10))
 
 	request, err := http.NewRequest(http.MethodPost, "https://api.stripe.com/v1/checkout/sessions", strings.NewReader(form.Encode()))
@@ -902,7 +914,7 @@ func (a *app) deleteLock(w http.ResponseWriter, r *http.Request, id int64) {
 }
 
 func (a *app) findLock(id int64) (lockItem, error) {
-	row := a.db.QueryRow(a.query(`SELECT id, secret_text, unlock_at, unlock_local, timezone_name, timezone_offset_minutes, price_amount, currency, unlocked, unlock_reason, created_at, updated_at FROM locks WHERE id = ?`), id)
+	row := a.db.QueryRow(a.query(`SELECT id, name, secret_text, unlock_at, unlock_local, timezone_name, timezone_offset_minutes, price_amount, currency, unlocked, unlock_reason, created_at, updated_at FROM locks WHERE id = ?`), id)
 	return scanLock(row)
 }
 
@@ -918,6 +930,7 @@ func scanLock(row scanner) (lockItem, error) {
 
 	if err := row.Scan(
 		&item.ID,
+		&item.Name,
 		&secretText,
 		&item.UnlockAt,
 		&item.UnlockLocal,
@@ -936,6 +949,7 @@ func scanLock(row scanner) (lockItem, error) {
 	if unlockReason.Valid {
 		item.UnlockReason = &unlockReason.String
 	}
+	item.Name = lockDisplayName(item.ID, item.Name)
 
 	item.Unlocked = unlocked == 1
 	item.IsOpen = item.Unlocked || unlockTimePassed(item.UnlockAt)
@@ -947,6 +961,14 @@ func scanLock(row scanner) (lockItem, error) {
 	}
 
 	return item, nil
+}
+
+func lockDisplayName(id int64, name string) string {
+	name = strings.TrimSpace(name)
+	if name != "" {
+		return name
+	}
+	return "Lock #" + strconv.FormatInt(id, 10)
 }
 
 func unlockTimePassed(value string) bool {

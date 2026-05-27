@@ -117,6 +117,7 @@ function App() {
   const [locks, setLocks] = useState([]);
   const [stripeEnabled, setStripeEnabled] = useState(false);
   const [dbProvider, setDbProvider] = useState("sqlite");
+  const [lockName, setLockName] = useState("");
   const [secretText, setSecretText] = useState("");
   const [unlockAt, setUnlockAt] = useState(defaultUnlockTime());
   const [unlockAtTouched, setUnlockAtTouched] = useState(false);
@@ -203,6 +204,7 @@ function App() {
 
     try {
       await api.createLock({
+        name: lockName.trim(),
         secretText: trimmed,
         unlockAt: localToRFC3339(unlockAt),
         unlockLocal: unlockAt,
@@ -210,6 +212,7 @@ function App() {
         timezoneOffsetMinutes: timezoneOffsetMinutes(unlockAt),
         priceAmount: parsedPrice
       });
+      setLockName("");
       setSecretText("");
       setUnlockAt(defaultUnlockTime());
       setUnlockAtTouched(false);
@@ -284,6 +287,17 @@ function App() {
           </div>
 
           <label className="field">
+            <span>名前</span>
+            <input
+              type="text"
+              maxLength="100"
+              value={lockName}
+              onChange={(event) => setLockName(event.target.value)}
+              placeholder="Lock #"
+            />
+          </label>
+
+          <label className="field">
             <span>中身</span>
             <textarea
               value={secretText}
@@ -345,7 +359,7 @@ function App() {
                     <div className="lock-card-header">
                       <div>
                         <span className={`status ${visible ? "open" : "locked"}`}>{statusFor(lock)}</span>
-                        <h3>Lock #{lock.id}</h3>
+                        <h3>{lock.name || `Lock #${lock.id}`}</h3>
                       </div>
                       <strong>{formatPrice(lock.priceAmount, lock.currency)}</strong>
                     </div>
@@ -389,7 +403,7 @@ function App() {
             <p className="eyebrow">Delete</p>
             <h2 id="delete-title">本当に削除しますか</h2>
             <p className="locked-copy">
-              Lock #{deleteDialog.item.id} をDBから削除します。
+              {deleteDialog.item.name || `Lock #${deleteDialog.item.id}`} をDBから削除します。
               続けるには「delete」と入力してください。
             </p>
             <input value={deleteText} onChange={(event) => setDeleteText(event.target.value)} placeholder="delete" autoFocus />

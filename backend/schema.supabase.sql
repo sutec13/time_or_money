@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS locks (
   id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
   secret_text TEXT NOT NULL,
   unlock_at TEXT NOT NULL,
   unlock_local TEXT NOT NULL DEFAULT '',
